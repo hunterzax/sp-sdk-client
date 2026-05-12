@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Datalink — Sensor Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text-main: #1e293b;
+            --text-sec: #64748b;
+            --border: #e2e8f0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .header-status {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--card-bg);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--border);
+            margin-bottom: 0;
+        }
+
+        .status-indicators {
+            display: flex;
+            gap: 1.5rem;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #cbd5e1;
+            /* Default gray */
+            transition: background-color 0.3s ease;
+        }
+
+        .status-dot.connected {
+            background-color: #22c55e;
+            /* Green */
+            box-shadow: 0 0 4px #22c55e;
+        }
+
+        .status-dot.disconnected {
+            background-color: #ef4444;
+            /* Red */
+        }
+
+        .status-dot.warning {
+            background-color: #eab308;
+            /* Yellow/Orange */
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            background: var(--card-bg);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--border);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        select {
+            padding: 0.5rem;
+            border: 1px solid var(--border);
+            border-radius: 0.25rem;
+            font-size: 0.875rem;
+            min-width: 200px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 2rem;
+        }
+
+        @media (min-width: 1024px) {
+            .dashboard-grid {
+                grid-template-columns: 2fr 1fr;
+            }
+        }
+
+        .card {
+            background: var(--card-bg);
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--border);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .card-header {
+            margin-bottom: 1rem;
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--text-sec);
+        }
+
+        .heatmap-container {
+            display: grid;
+            grid-template-columns: repeat(20, 1fr);
+            /* 20 cols x 3 rows = 60 minutes */
+            gap: 4px;
+            margin-top: 1rem;
+        }
+
+        .heatmap-cell {
+            aspect-ratio: 1;
+            background-color: #ef4444;
+            /* Default to Red (Missing) */
+            border-radius: 2px;
+            cursor: title;
+            width: 100%;
+        }
+
+        .heatmap-cell.active {
+            background-color: #22c55e;
+            /* Green (Present) */
+        }
+
+        .heatmap-cell.missing {
+            background-color: #ef4444;
+            /* Explicitly Red */
+            opacity: 0.3;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header-status">
+        <h1>Datalink</h1>
+        <div class="status-indicators">
+            <div class="status-item">
+                <div id="wsStatus" class="status-dot"></div>
+                <span>Dashboard Connection</span>
+            </div>
+            <div class="status-item">
+                <div id="kafkaStatus" class="status-dot"></div>
+                <span>Data Stream</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <select id="tagSelect" onchange="loadData()">
+            <option value="" disabled selected>Select a Tag</option>
+        </select>
+        <button onclick="loadData()">Refresh Charts</button>
+    </div>
+
+    <div class="dashboard-grid">
+        <!-- History Chart -->
+        <div class="card">
+            <div class="card-header">7-Day History</div>
+            <canvas id="historyChart"></canvas>
+        </div>
+
+        <!-- Heatmap / Details -->
+        <div class="card">
+            <div class="card-header">Availability Heatmap (Last 60 Minutes)</div>
+            <p style="font-size: 0.8em; color: gray;">Grid shows minute-by-minute availability. Green: Data Present,
+                Red: Missing.</p>
+            <div id="heatmap" class="heatmap-container">
+                <!-- Javascript will populate this -->
+            </div>
+
+            <div style="margin-top: 2rem;">
+                <div class="card-header">Latest Reading</div>
+                <div id="latestValue" style="font-size: 2rem; font-weight: bold;">--</div>
+                <div id="latestTime" style="color: grey; font-size: 0.9rem;">--</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let historyChart = null;
+        let ws = null;
+        let dataStreamTimeout = null;
+        let websocketUrl = 'ws://' + window.location.hostname + ':8887';
+        const STREAM_TIMEOUT_MS = 5000; // 5 seconds without data = warning
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const cfg = await fetch('/api/config').then(r => r.json());
+                if (cfg.websocketEnabled === 'false') {
+                    updateStatus('wsStatus', 'warning');
+                    console.info('WebSocket disabled by server (CLIENT_WEBSOCKET_ENABLED=false)');
+                } else {
+                    if (cfg.websocketUrl) {
+                        websocketUrl = cfg.websocketUrl;
+                    }
+                    connectWebSocket();
+                }
+            } catch (e) {
+                console.warn('Using default WebSocket URL', e);
+                connectWebSocket();
+            }
+            fetchTags();
+        });
+
+        function connectWebSocket() {
+            ws = new WebSocket(websocketUrl);
+
+            ws.onopen = () => {
+                updateStatus('wsStatus', 'connected');
+                console.log('WebSocket Connected');
+            };
+
+            ws.onclose = () => {
+                updateStatus('wsStatus', 'disconnected');
+                console.log('WebSocket Disconnected. Reconnecting in 3s...');
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (err) => {
+                console.error('WebSocket Error:', err);
+                ws.close();
+            };
+
+            ws.onmessage = (event) => {
+                // Flash the kafka status green indicate data flow
+                flashDataStreamStatus();
+
+                try {
+                    const record = JSON.parse(event.data);
+                    // Update latest values if this record matches selected tag
+                    const selectedTag = document.getElementById('tagSelect').value;
+                    if (selectedTag && record.tagname === selectedTag) {
+                        document.getElementById('latestValue').textContent = record.cur_value.toFixed(2);
+                        document.getElementById('latestTime').textContent = new Date(record.time).toLocaleString();
+
+                        // Optional: Could append to chart here for real-time smoothness
+                    }
+                } catch (e) {
+                    console.error('Error parsing WS message', e);
+                }
+            };
+        }
+
+        function updateStatus(elementId, status) {
+            const el = document.getElementById(elementId);
+            el.className = 'status-dot ' + status;
+        }
+
+        function flashDataStreamStatus() {
+            const el = document.getElementById('kafkaStatus');
+            el.className = 'status-dot connected'; // Green
+
+            // Reset timer
+            if (dataStreamTimeout) clearTimeout(dataStreamTimeout);
+
+            // Set timeout to turn yellow/red if no more data comes
+            dataStreamTimeout = setTimeout(() => {
+                el.className = 'status-dot warning'; // Yellow/Orange
+            }, STREAM_TIMEOUT_MS);
+        }
+
+        async function fetchTags() {
+            try {
+                const response = await fetch('/api/tags');
+                const tags = await response.json();
+                const select = document.getElementById('tagSelect');
+                tags.forEach(tag => {
+                    const option = document.createElement('option');
+                    option.value = tag;
+                    option.textContent = tag;
+                    select.appendChild(option);
+                });
+
+                if (tags.length > 0) {
+                    select.value = tags[0];
+                    loadData();
+                }
+            } catch (error) {
+                console.error('Error fetching tags:', error);
+            }
+        }
+
+        async function loadData() {
+            const tag = document.getElementById('tagSelect').value;
+            if (!tag) return;
+
+            loadHistory(tag);
+            loadHeatmap(tag);
+        }
+
+        async function loadHistory(tag) {
+            try {
+                const response = await fetch(`/api/history?tag=${encodeURIComponent(tag)}&days=7`);
+                const data = await response.json();
+
+                const ctx = document.getElementById('historyChart').getContext('2d');
+
+                if (historyChart) {
+                    historyChart.destroy();
+                }
+
+                historyChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.map(d => new Date(d.TIME).toLocaleString()),
+                        datasets: [{
+                            label: `Value for ${tag}`,
+                            data: data.map(d => d.CUR_VALUE),
+                            borderColor: '#2563eb',
+                            backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        interaction: {
+                            intersect: false,
+                            mode: 'index',
+                        },
+                        scales: {
+                            x: {
+                                display: false // Hide x labels if too many
+                            }
+                        }
+                    }
+                });
+
+                if (data.length > 0) {
+                    const latest = data[data.length - 1];
+                    document.getElementById('latestValue').textContent = latest.CUR_VALUE.toFixed(2);
+                    document.getElementById('latestTime').textContent = new Date(latest.TIME).toLocaleString();
+                }
+
+            } catch (error) {
+                console.error('Error loading history:', error);
+            }
+        }
+
+        async function loadHeatmap(tag) {
+            try {
+                const response = await fetch(`/api/heatmap?tag=${encodeURIComponent(tag)}`);
+                const data = await response.json();
+
+                // Convert API data to a Map for easy lookup: "yyyy-MM-dd HH:mm" -> Data Object
+                const dataMap = new Map();
+                data.forEach(item => {
+                    dataMap.set(item.MINUTE_BUCKET, item);
+                });
+
+                const container = document.getElementById('heatmap');
+                container.innerHTML = '';
+
+                // Generate last 60 minutes of buckets
+                const now = new Date();
+                // Round down to nearest minute
+                now.setSeconds(0, 0);
+
+                const minutesToShow = 60;
+
+                for (let i = 0; i < minutesToShow; i++) {
+                    const t = new Date(now.getTime() - (minutesToShow - 1 - i) * 60000);
+
+                    const yyyy = t.getFullYear();
+                    const mm = String(t.getMonth() + 1).padStart(2, '0');
+                    const dd = String(t.getDate()).padStart(2, '0');
+                    const HH = String(t.getHours()).padStart(2, '0');
+                    const MM = String(t.getMinutes()).padStart(2, '0');
+
+                    const key = `${yyyy}-${mm}-${dd} ${HH}:${MM}`;
+
+                    const hasData = dataMap.has(key);
+                    const record = dataMap.get(key);
+
+                    const div = document.createElement('div');
+                    // If no data -> missing (Red)
+                    div.className = 'heatmap-cell ' + (hasData ? 'active' : 'missing');
+
+                    const count = hasData ? record.COUNT : 0;
+                    const avg = hasData && record.AVG_VALUE ? record.AVG_VALUE.toFixed(2) : 'N/A';
+
+                    div.title = `${key}: ${count} records, Avg: ${avg}`;
+                    container.appendChild(div);
+                }
+
+            } catch (e) {
+                console.error("Heatmap error", e);
+            }
+        }
+    </script>
+</body>
+
+</html>

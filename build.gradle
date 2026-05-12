@@ -1,0 +1,45 @@
+plugins {
+    id 'application'
+    id 'org.springframework.boot' version '3.5.14'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.ptt'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+// Force vulnerable transitive dependencies to safe versions not managed by Spring Boot BOM
+configurations.configureEach {
+    resolutionStrategy {
+        // json-smart: CVE-2024-57699 fixed in 2.5.2
+        force 'net.minidev:json-smart:2.5.2'
+        // AssertJ: CVE-2026-24400 fixed in 3.27.7
+        force 'org.assertj:assertj-core:3.27.7'
+    }
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-websocket'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'org.apache.kafka:kafka-clients:3.9.2'
+    implementation 'org.java-websocket:Java-WebSocket:1.5.4'
+    // jackson-databind version is now managed by Spring Boot 3.5.14 BOM (2.21.2)
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    implementation 'com.h2database:h2:2.2.224'
+    implementation 'com.microsoft.sqlserver:mssql-jdbc:12.8.2.jre11'
+    // OWASP Java Encoder – lightweight Veracode-trusted sanitizer for CWE-117 (log injection)
+    implementation 'org.owasp.encoder:encoder:1.4.0'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+application {
+    mainClass = 'com.ptt.client.ClientApp'
+}
+
+tasks.withType(JavaCompile) {
+    options.compilerArgs.add('-parameters')
+}
